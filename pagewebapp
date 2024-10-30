@@ -1,0 +1,376 @@
+Microsoft.EntityFrameworkCore.SqlServer
+Microsoft.EntityFrameworkCore.Tools
+Microsoft.Data.SqlClient
+
+
+
+-----
+
+"ConnectionStrings": {
+  "DmdDatabase": "Server=YOUR_SERVER;Database=NewVesco;User Id=YOUR_USER;Password=YOUR_PASSWORD;"
+}
+
+
+-----
+
+
+Create new class in Data (e.g., DmdDbContext.cs) for Entity Framework and SQL interaction.
+
+----
+
+ New models for SSP_VescoQueueList, SSP_SPTaskTypeList, and SSP_SPTaskList
+
+ 1 : public class SSPVescoQueue
+{
+    public int UID { get; set; }
+    public string Description { get; set; }
+    public string Process { get; set; }
+    public string TaskToExecute { get; set; }
+    public string ExecutionStatusResult { get; set; }
+    public DateTime StartDateTime { get; set; }
+    public DateTime EndDateTime { get; set; }
+    public int ProcessUID { get; set; }
+}
+
+
+2: public class SSP_SPTaskType
+{
+    public int UID { get; set; }
+    public string Name { get; set; }
+    public int Order { get; set; }
+}
+
+
+3: 
+
+public class SSP_SPTask
+{
+    public int UID { get; set; }
+    public string Name { get; set; }
+    public int SPTaskTypeUID { get; set; }
+    public string SP { get; set; }
+    public string Param { get; set; }
+}
+
+
+
+-------------
+
+In the Data folder, create a new class file named DmdDbContext.cs.
+This class will inherit from DbContext and serve as the bridge between the models and the database.
+
+
+
+using Microsoft.EntityFrameworkCore;
+
+public class DmdDbContext : DbContext
+{
+    public DmdDbContext(DbContextOptions<DmdDbContext> options) : base(options) { }
+
+    public DbSet<SSPVescoQueue> VescoQueue { get; set; }
+    public DbSet<SSP_SPTaskType> SPTaskTypes { get; set; }
+    public DbSet<SSP_SPTask> SPTasks { get; set; }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        // Map models to specific views or tables if needed, e.g.,
+        modelBuilder.Entity<SSPVescoQueue>().ToView("v_VescoQueue", "config");
+        modelBuilder.Entity<SSP_SPTaskType>().ToTable("SSP_SPTaskTypeList", "config");
+        modelBuilder.Entity<SSP_SPTask>().ToTable("SSP_SPTaskList", "config");
+
+        base.OnModelCreating(modelBuilder);
+    }
+}
+
+
+------
+
+ section where services are configured, usually in var builder = WebApplication.CreateBuilder(args);.
+Add the DmdDbContext registration within the ConfigureServices area.
+
+
+
+// Register the DbContext with SQL Server configuration
+builder.Services.AddDbContext<DmdDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DmdDatabase")));
+
+// Ensure Razor Pages and Blazor services are added
+builder.Services.AddRazorPages();
+builder.Services.AddServerSideBlazor();
+
+
+
+-------
+
+
+Index : 
+
+@page "/"
+@inject DmdDbContext DbContext
+
+<h3>Filter and Execute</h3>
+
+<!-- First Filter -->
+<label>Filter 1:</label>
+<select @bind="selectedTaskTypeId">
+    @foreach (var taskType in TaskTypes)
+    {
+        <option value="@taskType.UID">@taskType.Name</option>
+    }
+</select>
+
+<!-- Second Filter -->
+<label>Filter 2:</label>
+<select @bind="selectedTaskId">
+    @foreach (var task in FilteredTasks)
+    {
+        <option value="@task.UID">@task.Name</option>
+    }
+</select>
+
+<!-- Execute Button -->
+<button @onclick="ExecuteStoredProcedure">Execute</button>
+
+<!-- Table Display -->
+<h3>Results</h3>
+<table>
+    <thead>
+        <tr>
+            <th>UID</th>
+            <th>Description</th>
+            <th>Process</th>
+            <th>Task</th>
+            <th>Status</th>
+            <th>Start Date</th>
+            <th>End Date</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var queueItem in VescoQueueList)
+        {
+            <tr>
+                <td>@queueItem.UID</td>
+                <td>@queueItem.Description</td>
+                <td>@queueItem.Process</td>
+                <td>@queueItem.TaskToExecute</td>
+                <td>
+    <span class="@GetStatusClass(queueItem.ExecutionStatusResult)">
+        @queueItem.ExecutionStatusResult
+    </span>
+</td>
+
+                <td>@queueItem.StartDateTime</td>
+                <td>@queueItem.EndDateTime</td>
+            </tr>
+        }
+    </tbody>
+</table>
+
+@code {
+    private List<SSP_SPTaskType> TaskTypes = new();
+    private List<SSP_SPTask> FilteredTasks = new();
+    private List<SSPVescoQueue> VescoQueueList = new();
+
+    private int selectedTaskTypeId;
+    private int selectedTaskId;
+
+    protected override async Task OnInitializedAsync()
+    {
+        TaskTypes = await DbContext.SPTaskTypes.ToListAsync();
+        LoadFilteredTasks();
+        LoadVescoQueue();
+    }
+
+    private void LoadFilteredTasks()
+    {
+        FilteredTasks = DbContext.SPTasks
+            .Where(task => task.SPTaskTypeUID == selectedTaskTypeId)
+            .ToList();
+    }
+
+    private void LoadVescoQueue()
+    {
+        VescoQueueList = DbContext.VescoQueue.ToList();
+    }
+
+    private async Task ExecuteStoredProcedure()
+    {
+        var selectedTask = FilteredTasks.FirstOrDefault(t => t.UID == selectedTaskId);
+        if (selectedTask != null)
+        {
+            var query = $"EXEC {selectedTask.SP} {selectedTask.Param}";
+            await DbContext.Database.ExecuteSqlRawAsync(query);
+            LoadVescoQueue(); // Refresh the table data only
+        }
+    }
+
+    private string GetStatusClass(string status)
+{
+    return status switch
+    {
+        "Queued" => "status-queued",
+        "Running" => "status-running",
+        "Successful" => "status-successful",
+        "Error" => "status-error",
+        _ => string.Empty,
+    };
+}
+
+}
+
+
+--------
+CSS ADD
+
+.status-queued {
+    background-color: orange;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+.status-running {
+    background-color: blue;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+.status-successful {
+    background-color: green;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+.status-error {
+    background-color: red;
+    color: white;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+
+
+----
+
+Update MainLayout.razor:
+
+Open Shared/MainLayout.razor and add a sidebar navigation menu with links to the pages.
+Wrap the sidebar in a toggleable layout if you prefer.
+
+
+<div class="sidebar">
+    <nav>
+        <ul>
+            <li><NavLink href="/" Match="NavLinkMatch.All">Home</NavLink></li>
+            <li><NavLink href="/SecondPage">Second Page</NavLink></li>
+        </ul>
+    </nav>
+</div>
+
+<div class="main-content">
+    @Body
+</div>
+
+----
+
+Add CSS for the Sidebar:
+
+Add styles to position and style the sidebar in app.css:
+
+.sidebar {
+    width: 250px;
+    background-color: #333;
+    color: white;
+    position: fixed;
+    height: 100%;
+    padding-top: 20px;
+}
+
+.sidebar nav ul {
+    list-style-type: none;
+    padding: 0;
+}
+
+.sidebar nav ul li {
+    margin: 10px 0;
+}
+
+.sidebar nav ul li a {
+    color: white;
+    text-decoration: none;
+    font-family: 'Lato', sans-serif;
+}
+
+.main-content {
+    margin-left: 250px;
+    padding: 20px;
+}
+
+
+
+----
+
+Add the Page Component:
+
+In the Pages folder, add a new Razor component named SecondPage.razor.
+Set Up the Route and Basic Markup:
+
+Define the page route at the top and add a header for the list.
+Use a loop to display each query result as a clickable link.
+
+
+@page "/SecondPage"
+@inject DmdDbContext DbContext
+
+<h3>SQL Query List</h3>
+
+<ul>
+    @foreach (var item in QueryList)
+    {
+        <li>
+            <a href="@GetItemUrl(item)" target="_blank">@item.Name</a>
+        </li>
+    }
+</ul>
+
+
+Code-behind for SecondPage.razor:
+
+Define a property to store the list of items returned from the SQL query.
+In the OnInitializedAsync method, load the data from SQL and populate the list.
+
+@code {
+    private List<SSP_SPTaskType> QueryList = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Assuming SSP_SPTaskType list is required for this page
+        QueryList = await DbContext.SPTaskTypes.ToListAsync();
+    }
+
+    private string GetItemUrl(SSP_SPTaskType item)
+    {
+        // Construct the URL or page name to navigate based on the item.
+        // Adjust this logic if the link depends on specific item data.
+        return $"/TargetPage/{item.UID}";
+    }
+}
+
+Dynamic Link Generation:
+
+Here, GetItemUrl generates a URL for each item. Adjust this based on your desired link structure. For now, it navigates to /TargetPage/{UID}, but you can modify it as needed.
+
+<div class="sidebar">
+    <nav>
+        <ul>
+            <li><NavLink href="/" Match="NavLinkMatch.All">Home</NavLink></li>
+            <li><NavLink href="/SecondPage">Second Page</NavLink></li>
+        </ul>
+    </nav>
+</div>
+
+PAGE 1 
+<a href="https://yourreportlink.com" target="_blank">Go to report</a>
+
+
+
+
